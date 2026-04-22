@@ -506,6 +506,7 @@ function HouseholdJoinPanel({
   inviteCodeInput,
   setInviteCodeInput,
   onJoinHousehold,
+  onCreateHousehold,
   joinLoading,
   onLogout,
 }) {
@@ -534,6 +535,13 @@ function HouseholdJoinPanel({
           className="w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-medium text-white disabled:opacity-50"
         >
           {joinLoading ? '加入中…' : '加入该家庭'}
+        </button>
+        <button
+          onClick={onCreateHousehold}
+          disabled={joinLoading}
+          className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm font-medium text-slate-700 disabled:opacity-50"
+        >
+          {joinLoading ? '处理中…' : '没有邀请码，自动创建我的家庭'}
         </button>
       </div>
       <button onClick={onLogout} className="mt-4 text-xs text-slate-500 underline">退出登录</button>
@@ -644,7 +652,7 @@ export default function FridgeManagerPrototype() {
     };
   };
 
-  const resolveHouseholdForUser = async (user) => {
+  const ensureHouseholdForUser = async (user) => {
     if (!supabase || !user) return null;
 
     const { data: membership, error: membershipError } = await supabase
@@ -680,20 +688,9 @@ export default function FridgeManagerPrototype() {
     }
 
     const createdHousehold = await createAndBindHouseholdForUser(user);
-    if (createdHousehold) {
-      setInventory([]);
-      setShoppingList([]);
-      return createdHousehold;
-    }
-
-    if (membership?.household_id) {
-      return {
-        id: membership.household_id,
-        name: '我的家庭',
-        inviteCode: '',
-      };
-    }
-    return null;
+    setInventory([]);
+    setShoppingList([]);
+    return createdHousehold;
   };
 
   useEffect(() => {
@@ -710,7 +707,7 @@ export default function FridgeManagerPrototype() {
 
       if (currentSession?.user) {
         try {
-          const nextHousehold = await resolveHouseholdForUser(currentSession.user);
+          const nextHousehold = await ensureHouseholdForUser(currentSession.user);
           if (!mounted) return;
           if (nextHousehold) {
             setHousehold(nextHousehold);
@@ -730,7 +727,7 @@ export default function FridgeManagerPrototype() {
       if (nextSession?.user) {
         setIsBootstrapping(true);
         try {
-          const nextHousehold = await resolveHouseholdForUser(nextSession.user);
+          const nextHousehold = await ensureHouseholdForUser(nextSession.user);
           if (nextHousehold) {
             setHousehold(nextHousehold);
             await hydrateHouseholdData(nextHousehold.id);
@@ -869,6 +866,23 @@ export default function FridgeManagerPrototype() {
     await supabase.auth.signOut();
     setSession(null);
     setHousehold(null);
+  };
+
+  const createMyHouseholdNow = async () => {
+    if (!session?.user) return;
+    try {
+      setJoinLoading(true);
+      const nextHousehold = await ensureHouseholdForUser(session.user);
+      if (nextHousehold) {
+        setHousehold(nextHousehold);
+        await hydrateHouseholdData(nextHousehold.id);
+        showToast(`已进入 ${nextHousehold.name}`);
+      }
+    } catch (error) {
+      showToast(`创建家庭失败：${error.message}`);
+    } finally {
+      setJoinLoading(false);
+    }
   };
 
   const enterDemoHousehold = () => {
@@ -1155,6 +1169,7 @@ export default function FridgeManagerPrototype() {
             inviteCodeInput={inviteCodeInput}
             setInviteCodeInput={setInviteCodeInput}
             onJoinHousehold={joinHouseholdByInviteCode}
+            onCreateHousehold={createMyHouseholdNow}
             joinLoading={joinLoading}
             onLogout={logout}
           />
