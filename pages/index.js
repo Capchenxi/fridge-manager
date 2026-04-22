@@ -17,6 +17,7 @@ import {
 
 const SUPABASE_URL = typeof process !== 'undefined' ? process.env.NEXT_PUBLIC_SUPABASE_URL : '';
 const SUPABASE_ANON_KEY = typeof process !== 'undefined' ? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY : '';
+
 const supabase =
   SUPABASE_URL && SUPABASE_ANON_KEY
     ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
@@ -1173,10 +1174,7 @@ export default function FridgeManagerPrototype() {
             onLogout={logout}
           />
         )}
-        <div className="mx-auto mt-6 max-w-3xl rounded-3xl border border-slate-200 bg-white p-6 shadow-xl">
-          <div className="text-base font-semibold text-slate-900">Supabase 表结构建议</div>
-          <pre className="mt-3 overflow-auto rounded-2xl bg-slate-950 p-4 text-xs text-slate-100">{`-- households\ncreate table households (\n  id uuid primary key default gen_random_uuid(),\n  name text not null,\n  invite_code text unique not null,\n  created_at timestamptz default now()\n);\n\n-- household_members\ncreate table household_members (\n  id uuid primary key default gen_random_uuid(),\n  household_id uuid references households(id) on delete cascade,\n  user_id uuid not null,\n  role text default 'member',\n  created_at timestamptz default now()\n);\n\n-- inventory_items\ncreate table inventory_items (\n  id uuid primary key default gen_random_uuid(),\n  household_id uuid references households(id) on delete cascade,\n  name text not null,\n  category text not null,\n  zone text not null,\n  days_left integer default 3,\n  amount text default '',\n  for_baby boolean default false,\n  note text default '',\n  is_seasoning boolean default false,\n  low_stock boolean default false,\n  created_at timestamptz default now()\n);\n\n-- shopping_items\ncreate table shopping_items (\n  id uuid primary key default gen_random_uuid(),\n  household_id uuid references households(id) on delete cascade,\n  name text not null,\n  qty text default '',\n  created_at timestamptz default now()\n);`}</pre>
-        </div>
+        
       </div>
     );
   }
