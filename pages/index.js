@@ -31,13 +31,14 @@ const demoHousehold = {
 
 const INVITE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
-function generateInviteCode(length = 8) {
-  return Array.from({ length }, () => INVITE_ALPHABET[Math.floor(Math.random() * INVITE_ALPHABET.length)]).join('');
+function generateInviteCode(length = 6) {
+  const randomPart = Array.from({ length }, () => INVITE_ALPHABET[Math.floor(Math.random() * INVITE_ALPHABET.length)]).join('');
+  return `FRIDGE-${randomPart}`;
 }
 
 function generateHouseholdName(user) {
-  const fallback = user?.email?.split('@')[0] || '新成员';
-  return `${fallback} 的家`;
+  const fallback = user?.email || '新成员';
+  return `${fallback}的家`;
 }
 
 const emojiMap = {
@@ -605,17 +606,24 @@ export default function FridgeManagerPrototype() {
 
   const createAndBindHouseholdForUser = async (user) => {
     if (!supabase || !user) return null;
+    let householdRow = null;
+    let createError = null;
 
-    const payload = {
-      name: generateHouseholdName(user),
-      invite_code: generateInviteCode(),
-    };
-
-    const { data: householdRow, error: createError } = await supabase
-      .from('households')
-      .insert(payload)
-      .select('id, name, invite_code')
-      .single();
+    // 处理 invite_code 可能的极低概率冲突，最多重试 5 次
+    for (let i = 0; i < 5; i += 1) {
+      const payload = {
+        name: generateHouseholdName(user),
+        invite_code: generateInviteCode(),
+      };
+      const createResult = await supabase
+        .from('households')
+        .insert(payload)
+        .select('id, name, invite_code')
+        .single();
+      householdRow = createResult.data;
+      createError = createResult.error;
+      if (!createError && householdRow) break;
+    }
 
     if (createError || !householdRow) {
       throw new Error(createError?.message || '创建家庭失败');
@@ -639,27 +647,53 @@ export default function FridgeManagerPrototype() {
   const resolveHouseholdForUser = async (user) => {
     if (!supabase || !user) return null;
 
-    const { data: memberships, error: membershipError } = await supabase
+    const { data: membership, error: membershipError } = await supabase
       .from('household_members')
-      .select('household_id, role, households(id, name, invite_code)')
+      .select('household_id')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
-      .limit(1);
+      .limit(1)
+      .maybeSingle();
 
     if (membershipError) {
       throw new Error(membershipError.message || '查询家庭关系失败');
     }
 
-    const existing = memberships?.[0]?.households;
-    if (existing) {
-      return {
-        id: existing.id,
-        name: existing.name,
-        inviteCode: existing.invite_code,
-      };
+    if (membership?.household_id) {
+      const { data: existingHousehold, error: householdError } = await supabase
+        .from('households')
+        .select('id, name, invite_code')
+        .eq('id', membership.household_id)
+        .maybeSingle();
+
+      if (householdError) {
+        throw new Error(householdError.message || '读取家庭信息失败');
+      }
+
+      if (existingHousehold) {
+        return {
+          id: existingHousehold.id,
+          name: existingHousehold.name,
+          inviteCode: existingHousehold.invite_code,
+        };
+      }
     }
 
-    return createAndBindHouseholdForUser(user);
+    const createdHousehold = await createAndBindHouseholdForUser(user);
+    if (createdHousehold) {
+      setInventory([]);
+      setShoppingList([]);
+      return createdHousehold;
+    }
+
+    if (membership?.household_id) {
+      return {
+        id: membership.household_id,
+        name: '我的家庭',
+        inviteCode: '',
+      };
+    }
+    return null;
   };
 
   useEffect(() => {
