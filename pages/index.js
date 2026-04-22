@@ -28,6 +28,17 @@ const demoHousehold = {
   inviteCode: 'FRIDGE-DEMO',
 };
 
+const INVITE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+function generateInviteCode(length = 8) {
+  return Array.from({ length }, () => INVITE_ALPHABET[Math.floor(Math.random() * INVITE_ALPHABET.length)]).join('');
+}
+
+function generateHouseholdName(user) {
+  const fallback = user?.email?.split('@')[0] || '新成员';
+  return `${fallback} 的家`;
+}
+
 const emojiMap = {
   生抽: '🫙',
   老抽: '🫙',
@@ -487,6 +498,47 @@ function AuthPanel({ email, setEmail, onSendMagicLink, onUseDemo, loading, authM
   );
 }
 
+function HouseholdJoinPanel({
+  email,
+  household,
+  inviteCodeInput,
+  setInviteCodeInput,
+  onJoinHousehold,
+  joinLoading,
+  onLogout,
+}) {
+  return (
+    <div className="mx-auto max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-xl">
+      <div className="text-xl font-bold text-slate-900">家庭空间</div>
+      <div className="mt-2 text-sm text-slate-500">
+        当前账号：{email || '未识别邮箱'}
+      </div>
+      <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+        <div className="text-sm font-semibold text-emerald-800">当前家庭</div>
+        <div className="mt-1 text-sm text-emerald-700">{household?.name || '未加入家庭'}</div>
+        <div className="mt-1 text-xs text-emerald-700">邀请码：{household?.inviteCode || '未生成'}</div>
+      </div>
+      <div className="mt-4 space-y-3">
+        <div className="text-sm font-semibold text-slate-800">输入邀请码加入/切换家庭</div>
+        <input
+          value={inviteCodeInput}
+          onChange={(e) => setInviteCodeInput(e.target.value.toUpperCase())}
+          placeholder="例如：ABCD1234"
+          className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm uppercase outline-none"
+        />
+        <button
+          onClick={onJoinHousehold}
+          disabled={joinLoading}
+          className="w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-medium text-white disabled:opacity-50"
+        >
+          {joinLoading ? '加入中…' : '加入该家庭'}
+        </button>
+      </div>
+      <button onClick={onLogout} className="mt-4 text-xs text-slate-500 underline">退出登录</button>
+    </div>
+  );
+}
+
 export default function FridgeManagerPrototype() {
   const [tab, setTab] = useState('home');
   const [session, setSession] = useState(null);
@@ -506,6 +558,9 @@ export default function FridgeManagerPrototype() {
   const [checkedShoppingIds, setCheckedShoppingIds] = useState([]);
   const [isBootstrapping, setIsBootstrapping] = useState(Boolean(supabase));
 
+  const [inviteCodeInput, setInviteCodeInput] = useState('');
+  const [joinLoading, setJoinLoading] = useState(false);
+
   const urgentItems = useMemo(() => inventory.filter((item) => item.daysLeft <= 2 && !item.forBaby && !item.isSeasoning), [inventory]);
   const babyItems = useMemo(() => inventory.filter((item) => item.forBaby), [inventory]);
   const seasoningItems = useMemo(() => inventory.filter((item) => item.isSeasoning), [inventory]);
@@ -517,6 +572,94 @@ export default function FridgeManagerPrototype() {
     return { urgent, stale };
   }, [inventory]);
   const selfChecks = useMemo(() => runSelfChecks(), []);
+
+  const showToast = (message) => {
+    setToast(message);
+    if (typeof window !== 'undefined') {
+      window.clearTimeout(showToast.timer);
+      showToast.timer = window.setTimeout(() => setToast(''), 2200);
+    }
+  };
+
+  const hydrateHouseholdData = async (householdId) => {
+    if (!supabase || !householdId) return;
+
+    const { data: inventoryRows } = await supabase
+      .from('inventory_items')
+      .select('*')
+      .eq('household_id', householdId)
+      .order('created_at', { ascending: false });
+
+    const { data: shoppingRows } = await supabase
+      .from('shopping_items')
+      .select('*')
+      .eq('household_id', householdId)
+      .order('created_at', { ascending: false });
+
+    if (inventoryRows) setInventory(inventoryRows.map(normalizeInventoryRow));
+    if (shoppingRows) {
+      setShoppingList(shoppingRows.map((row) => ({ id: row.id, name: row.name, qty: row.qty || '' })));
+    }
+  };
+
+  const createAndBindHouseholdForUser = async (user) => {
+    if (!supabase || !user) return null;
+
+    const payload = {
+      name: generateHouseholdName(user),
+      invite_code: generateInviteCode(),
+    };
+
+    const { data: householdRow, error: createError } = await supabase
+      .from('households')
+      .insert(payload)
+      .select('id, name, invite_code')
+      .single();
+
+    if (createError || !householdRow) {
+      throw new Error(createError?.message || '创建家庭失败');
+    }
+
+    const { error: memberError } = await supabase
+      .from('household_members')
+      .insert({ household_id: householdRow.id, user_id: user.id, role: 'owner' });
+
+    if (memberError) {
+      throw new Error(memberError.message || '绑定家庭成员失败');
+    }
+
+    return {
+      id: householdRow.id,
+      name: householdRow.name,
+      inviteCode: householdRow.invite_code,
+    };
+  };
+
+  const resolveHouseholdForUser = async (user) => {
+    if (!supabase || !user) return null;
+
+    const { data: memberships, error: membershipError } = await supabase
+      .from('household_members')
+      .select('household_id, role, households(id, name, invite_code)')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (membershipError) {
+      throw new Error(membershipError.message || '查询家庭关系失败');
+    }
+
+    const existing = memberships?.[0]?.households;
+    if (existing) {
+      return {
+        id: existing.id,
+        name: existing.name,
+        inviteCode: existing.invite_code,
+      };
+    }
+
+    return createAndBindHouseholdForUser(user);
+  };
 
   useEffect(() => {
     if (!supabase) {
@@ -531,36 +674,15 @@ export default function FridgeManagerPrototype() {
       setSession(currentSession || null);
 
       if (currentSession?.user) {
-        const { data: membership } = await supabase
-          .from('household_members')
-          .select('household_id, households(id, name, invite_code)')
-          .eq('user_id', currentSession.user.id)
-          .single();
-
-        if (membership?.households) {
-          const nextHousehold = {
-            id: membership.households.id,
-            name: membership.households.name,
-            inviteCode: membership.households.invite_code,
-          };
-          setHousehold(nextHousehold);
-
-          const { data: inventoryRows } = await supabase
-            .from('inventory_items')
-            .select('*')
-            .eq('household_id', nextHousehold.id)
-            .order('created_at', { ascending: false });
-
-          const { data: shoppingRows } = await supabase
-            .from('shopping_items')
-            .select('*')
-            .eq('household_id', nextHousehold.id)
-            .order('created_at', { ascending: false });
-
-          if (inventoryRows) setInventory(inventoryRows.map(normalizeInventoryRow));
-          if (shoppingRows) {
-            setShoppingList(shoppingRows.map((row) => ({ id: row.id, name: row.name, qty: row.qty || '' })));
+        try {
+          const nextHousehold = await resolveHouseholdForUser(currentSession.user);
+          if (!mounted) return;
+          if (nextHousehold) {
+            setHousehold(nextHousehold);
+            await hydrateHouseholdData(nextHousehold.id);
           }
+        } catch (error) {
+          showToast(`家庭初始化失败：${error.message}`);
         }
       }
       setIsBootstrapping(false);
@@ -568,8 +690,26 @@ export default function FridgeManagerPrototype() {
 
     bootstrap();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
       setSession(nextSession || null);
+      if (nextSession?.user) {
+        setIsBootstrapping(true);
+        try {
+          const nextHousehold = await resolveHouseholdForUser(nextSession.user);
+          if (nextHousehold) {
+            setHousehold(nextHousehold);
+            await hydrateHouseholdData(nextHousehold.id);
+          }
+        } catch (error) {
+          showToast(`家庭初始化失败：${error.message}`);
+        } finally {
+          setIsBootstrapping(false);
+        }
+      } else {
+        setHousehold(null);
+        setInventory(initialInventory);
+        setShoppingList(initialShopping);
+      }
     });
 
     return () => {
@@ -577,14 +717,6 @@ export default function FridgeManagerPrototype() {
       subscription.unsubscribe();
     };
   }, []);
-
-  const showToast = (message) => {
-    setToast(message);
-    if (typeof window !== 'undefined') {
-      window.clearTimeout(showToast.timer);
-      showToast.timer = window.setTimeout(() => setToast(''), 2200);
-    }
-  };
 
   const persistInventoryItem = async (item) => {
     if (!supabase || !household) return;
@@ -608,13 +740,13 @@ export default function FridgeManagerPrototype() {
   };
 
   const removeShoppingItemRemote = async (id) => {
-    if (!supabase) return;
-    await supabase.from('shopping_items').delete().eq('id', id);
+    if (!supabase || !household) return;
+    await supabase.from('shopping_items').delete().eq('id', id).eq('household_id', household.id);
   };
 
   const removeInventoryItemRemote = async (id) => {
-    if (!supabase) return;
-    await supabase.from('inventory_items').delete().eq('id', id);
+    if (!supabase || !household) return;
+    await supabase.from('inventory_items').delete().eq('id', id).eq('household_id', household.id);
   };
 
   const sendMagicLink = async () => {
@@ -637,6 +769,71 @@ export default function FridgeManagerPrototype() {
       return;
     }
     showToast('登录链接已发送，请去邮箱确认');
+  };
+
+  const joinHouseholdByInviteCode = async () => {
+    if (!supabase || !session?.user) {
+      showToast('请先登录');
+      return;
+    }
+
+    const code = inviteCodeInput.trim().toUpperCase();
+    if (!code) {
+      showToast('请输入邀请码');
+      return;
+    }
+
+    setJoinLoading(true);
+
+    const { data: targetHousehold, error: householdError } = await supabase
+      .from('households')
+      .select('id, name, invite_code')
+      .eq('invite_code', code)
+      .maybeSingle();
+
+    if (householdError || !targetHousehold) {
+      setJoinLoading(false);
+      showToast('邀请码无效，请检查后重试');
+      return;
+    }
+
+    const { data: existingMembership } = await supabase
+      .from('household_members')
+      .select('id')
+      .eq('user_id', session.user.id)
+      .eq('household_id', targetHousehold.id)
+      .maybeSingle();
+
+    if (!existingMembership) {
+      const { error: joinError } = await supabase
+        .from('household_members')
+        .insert({ user_id: session.user.id, household_id: targetHousehold.id, role: 'member' });
+
+      if (joinError) {
+        setJoinLoading(false);
+        showToast(`加入失败：${joinError.message}`);
+        return;
+      }
+    }
+
+    const nextHousehold = {
+      id: targetHousehold.id,
+      name: targetHousehold.name,
+      inviteCode: targetHousehold.invite_code,
+    };
+
+    setHousehold(nextHousehold);
+    setInviteCodeInput('');
+    await hydrateHouseholdData(nextHousehold.id);
+    setJoinLoading(false);
+    showToast(`已加入 ${nextHousehold.name}`);
+  };
+
+  const logout = async () => {
+    if (!supabase) return;
+    await supabase.auth.signOut();
+    setSession(null);
+    setHousehold(null);
   };
 
   const enterDemoHousehold = () => {
@@ -872,9 +1069,24 @@ export default function FridgeManagerPrototype() {
         <Section title="家庭信息" icon={<Home className="h-4 w-4 text-slate-700" />}>
           <div className="space-y-2 text-sm text-slate-600">
             <div>• 当前家庭：{household?.name || 'XX 的家'}</div>
-            <div>• 成员：3 位大人 + 1 位 15 个月宝宝</div>
             <div>• 模式：家庭共享</div>
             <div>• 邀请码：{household?.inviteCode || '未生成'}</div>
+          </div>
+          <div className="mt-4 space-y-2">
+            <div className="text-xs font-medium text-slate-700">输入邀请码加入/切换家庭</div>
+            <input
+              value={inviteCodeInput}
+              onChange={(e) => setInviteCodeInput(e.target.value.toUpperCase())}
+              placeholder="输入邀请码"
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm uppercase outline-none"
+            />
+            <button
+              onClick={joinHouseholdByInviteCode}
+              disabled={joinLoading}
+              className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+            >
+              {joinLoading ? '处理中…' : '加入该家庭'}
+            </button>
           </div>
         </Section>
         <Section title="提醒规则" icon={<AlertTriangle className="h-4 w-4 text-slate-700" />}>
@@ -899,7 +1111,19 @@ export default function FridgeManagerPrototype() {
           <h1 className="text-3xl font-bold text-slate-900">冰箱管理原型</h1>
           <p className="mt-2 text-sm text-slate-600">现在开始接入真实数据库和家庭共享登录。先登录，再进入属于你们家的冰箱空间。</p>
         </div>
-        <AuthPanel email={authEmail} setEmail={setAuthEmail} onSendMagicLink={sendMagicLink} onUseDemo={enterDemoHousehold} loading={authLoading} authMode={authMode} setAuthMode={setAuthMode} />
+        {!session ? (
+          <AuthPanel email={authEmail} setEmail={setAuthEmail} onSendMagicLink={sendMagicLink} onUseDemo={enterDemoHousehold} loading={authLoading} authMode={authMode} setAuthMode={setAuthMode} />
+        ) : (
+          <HouseholdJoinPanel
+            email={session?.user?.email}
+            household={household}
+            inviteCodeInput={inviteCodeInput}
+            setInviteCodeInput={setInviteCodeInput}
+            onJoinHousehold={joinHouseholdByInviteCode}
+            joinLoading={joinLoading}
+            onLogout={logout}
+          />
+        )}
         <div className="mx-auto mt-6 max-w-3xl rounded-3xl border border-slate-200 bg-white p-6 shadow-xl">
           <div className="text-base font-semibold text-slate-900">Supabase 表结构建议</div>
           <pre className="mt-3 overflow-auto rounded-2xl bg-slate-950 p-4 text-xs text-slate-100">{`-- households\ncreate table households (\n  id uuid primary key default gen_random_uuid(),\n  name text not null,\n  invite_code text unique not null,\n  created_at timestamptz default now()\n);\n\n-- household_members\ncreate table household_members (\n  id uuid primary key default gen_random_uuid(),\n  household_id uuid references households(id) on delete cascade,\n  user_id uuid not null,\n  role text default 'member',\n  created_at timestamptz default now()\n);\n\n-- inventory_items\ncreate table inventory_items (\n  id uuid primary key default gen_random_uuid(),\n  household_id uuid references households(id) on delete cascade,\n  name text not null,\n  category text not null,\n  zone text not null,\n  days_left integer default 3,\n  amount text default '',\n  for_baby boolean default false,\n  note text default '',\n  is_seasoning boolean default false,\n  low_stock boolean default false,\n  created_at timestamptz default now()\n);\n\n-- shopping_items\ncreate table shopping_items (\n  id uuid primary key default gen_random_uuid(),\n  household_id uuid references households(id) on delete cascade,\n  name text not null,\n  qty text default '',\n  created_at timestamptz default now()\n);`}</pre>
