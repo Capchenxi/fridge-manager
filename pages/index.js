@@ -719,13 +719,19 @@ export default function FridgeManagerPrototype() {
 
       if (nextSession?.user) {
         try {
-          const nextHousehold = await ensureHouseholdForUser(nextSession.user);
+          console.log('[fridge] 开始查询家庭数据...');
+          const householdResult = await Promise.race([
+            ensureHouseholdForUser(nextSession.user),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('家庭数据查询超时（5s），数据库可能不可用')), 5000)),
+          ]);
+          console.log('[fridge] 家庭数据查询完成:', householdResult?.name);
           if (!mounted) return;
-          if (nextHousehold) {
-            setHousehold(nextHousehold);
-            await hydrateHouseholdData(nextHousehold.id);
+          if (householdResult) {
+            setHousehold(householdResult);
+            await hydrateHouseholdData(householdResult.id);
           }
         } catch (error) {
+          console.error('[fridge] 家庭数据查询失败:', error.message);
           if (mounted) showToast(`家庭初始化失败：${error.message}`);
         }
       } else {
