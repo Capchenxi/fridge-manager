@@ -18,9 +18,6 @@ import {
 const SUPABASE_URL = typeof process !== 'undefined' ? process.env.NEXT_PUBLIC_SUPABASE_URL : '';
 const SUPABASE_ANON_KEY = typeof process !== 'undefined' ? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY : '';
 
-console.log('[fridge] SUPABASE_URL =', SUPABASE_URL || '(空)');
-console.log('[fridge] SUPABASE_ANON_KEY =', SUPABASE_ANON_KEY ? `${SUPABASE_ANON_KEY.slice(0, 20)}...（已截断）` : '(空)');
-console.log('[fridge] supabase client =', SUPABASE_URL && SUPABASE_ANON_KEY ? '已创建' : '未创建（缺少环境变量）');
 
 const supabase =
   SUPABASE_URL && SUPABASE_ANON_KEY
@@ -712,7 +709,6 @@ export default function FridgeManagerPrototype() {
     }
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      console.log('[fridge] auth event:', _event, 'hasUser:', !!nextSession?.user);
       setSession(nextSession || null);
       setAuthReady(true);
     });
@@ -736,16 +732,13 @@ export default function FridgeManagerPrototype() {
 
     async function loadHousehold() {
       try {
-        console.log('[fridge] 开始查询家庭数据...');
         const h = await ensureHouseholdForUser(session.user);
-        console.log('[fridge] 家庭数据查询完成:', h?.name);
         if (cancelled) return;
         if (h) {
           setHousehold(h);
           await hydrateHouseholdData(h.id);
         }
       } catch (error) {
-        console.error('[fridge] 家庭数据查询失败:', error.message);
         if (!cancelled) showToast(`家庭初始化失败：${error.message}`);
       } finally {
         if (!cancelled) setIsBootstrapping(false);
@@ -754,7 +747,7 @@ export default function FridgeManagerPrototype() {
 
     loadHousehold();
     return () => { cancelled = true; };
-  }, [authReady, session]);
+  }, [authReady, session?.user?.id]);
 
   const persistInventoryItem = async (item) => {
     if (!supabase || !household) return;
