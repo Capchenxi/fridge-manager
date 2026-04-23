@@ -577,6 +577,7 @@ export default function FridgeManagerPrototype() {
   const [mealPlanInput, setMealPlanInput] = useState('');
   const [checkedShoppingIds, setCheckedShoppingIds] = useState([]);
   const [isBootstrapping, setIsBootstrapping] = useState(Boolean(supabase));
+  const [authReady, setAuthReady] = useState(false);
 
   const [inviteCodeInput, setInviteCodeInput] = useState('');
   const [joinLoading, setJoinLoading] = useState(false);
@@ -703,50 +704,57 @@ export default function FridgeManagerPrototype() {
     return createdHousehold;
   };
 
+  // Effect 1: 只监听 auth 状态变化，不做任何数据库查询（避免 lock 死锁）
   useEffect(() => {
     if (!supabase) {
       setIsBootstrapping(false);
       return;
     }
-    let mounted = true;
 
-    // 只用 onAuthStateChange 处理所有 session 事件（包括 INITIAL_SESSION）
-    // 不再手动调 getSession()，避免两次调用抢同一把 Web Lock 导致卡死
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
-      if (!mounted) return;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       console.log('[fridge] auth event:', _event, 'hasUser:', !!nextSession?.user);
       setSession(nextSession || null);
-
-      if (nextSession?.user) {
-        try {
-          console.log('[fridge] 开始查询家庭数据...');
-          const householdResult = await Promise.race([
-            ensureHouseholdForUser(nextSession.user),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('家庭数据查询超时（5s），数据库可能不可用')), 5000)),
-          ]);
-          console.log('[fridge] 家庭数据查询完成:', householdResult?.name);
-          if (!mounted) return;
-          if (householdResult) {
-            setHousehold(householdResult);
-            await hydrateHouseholdData(householdResult.id);
-          }
-        } catch (error) {
-          console.error('[fridge] 家庭数据查询失败:', error.message);
-          if (mounted) showToast(`家庭初始化失败：${error.message}`);
-        }
-      } else {
-        setHousehold(null);
-        setInventory(initialInventory);
-        setShoppingList(initialShopping);
-      }
-      if (mounted) setIsBootstrapping(false);
+      setAuthReady(true);
     });
 
-    return () => {
-      mounted = false;
-      subscription.unsubscribe();
-    };
+    return () => subscription.unsubscribe();
   }, []);
+
+  // Effect 2: auth 就绪后，再做数据库查询加载家庭数据（运行在 lock 之外，不会死锁）
+  useEffect(() => {
+    if (!supabase || !authReady) return;
+
+    if (!session?.user) {
+      setHousehold(null);
+      setInventory(initialInventory);
+      setShoppingList(initialShopping);
+      setIsBootstrapping(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadHousehold() {
+      try {
+        console.log('[fridge] 开始查询家庭数据...');
+        const h = await ensureHouseholdForUser(session.user);
+        console.log('[fridge] 家庭数据查询完成:', h?.name);
+        if (cancelled) return;
+        if (h) {
+          setHousehold(h);
+          await hydrateHouseholdData(h.id);
+        }
+      } catch (error) {
+        console.error('[fridge] 家庭数据查询失败:', error.message);
+        if (!cancelled) showToast(`家庭初始化失败：${error.message}`);
+      } finally {
+        if (!cancelled) setIsBootstrapping(false);
+      }
+    }
+
+    loadHousehold();
+    return () => { cancelled = true; };
+  }, [authReady, session]);
 
   const persistInventoryItem = async (item) => {
     if (!supabase || !household) return;
