@@ -20,7 +20,13 @@ const SUPABASE_ANON_KEY = typeof process !== 'undefined' ? process.env.NEXT_PUBL
 
 const supabase =
   SUPABASE_URL && SUPABASE_ANON_KEY
-    ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+    ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: {
+          detectSessionInUrl: true,
+          persistSession: true,
+          autoRefreshToken: true,
+        },
+      })
     : null;
 
 const demoHousehold = {
@@ -701,41 +707,48 @@ export default function FridgeManagerPrototype() {
     let mounted = true;
 
     async function bootstrap() {
-      const { data: { session: currentSession } } = await supabase.auth.getSession();
-      if (!mounted) return;
-      setSession(currentSession || null);
+      try {
+        const { data: { session: currentSession } } = await supabase.auth.getSession();
+        if (!mounted) return;
+        setSession(currentSession || null);
 
-      if (currentSession?.user) {
+        if (currentSession?.user) {
+          try {
+            const nextHousehold = await ensureHouseholdForUser(currentSession.user);
+            if (!mounted) return;
+            if (nextHousehold) {
+              setHousehold(nextHousehold);
+              await hydrateHouseholdData(nextHousehold.id);
+            }
+          } catch (error) {
+            showToast(`家庭初始化失败：${error.message}`);
+          }
+        }
+      } catch (error) {
+        if (mounted) showToast(`连接失败：${error.message}`);
+      } finally {
+        if (mounted) setIsBootstrapping(false);
+      }
+    }
+
+    bootstrap();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
+      if (!mounted) return;
+      setSession(nextSession || null);
+      if (nextSession?.user) {
+        setIsBootstrapping(true);
         try {
-          const nextHousehold = await ensureHouseholdForUser(currentSession.user);
+          const nextHousehold = await ensureHouseholdForUser(nextSession.user);
           if (!mounted) return;
           if (nextHousehold) {
             setHousehold(nextHousehold);
             await hydrateHouseholdData(nextHousehold.id);
           }
         } catch (error) {
-          showToast(`家庭初始化失败：${error.message}`);
-        }
-      }
-      setIsBootstrapping(false);
-    }
-
-    bootstrap();
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
-      setSession(nextSession || null);
-      if (nextSession?.user) {
-        setIsBootstrapping(true);
-        try {
-          const nextHousehold = await ensureHouseholdForUser(nextSession.user);
-          if (nextHousehold) {
-            setHousehold(nextHousehold);
-            await hydrateHouseholdData(nextHousehold.id);
-          }
-        } catch (error) {
-          showToast(`家庭初始化失败：${error.message}`);
+          if (mounted) showToast(`家庭初始化失败：${error.message}`);
         } finally {
-          setIsBootstrapping(false);
+          if (mounted) setIsBootstrapping(false);
         }
       } else {
         setHousehold(null);
