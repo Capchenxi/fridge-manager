@@ -710,50 +710,14 @@ export default function FridgeManagerPrototype() {
     }
     let mounted = true;
 
-    async function bootstrap() {
-      try {
-        console.log('[fridge] bootstrap: 开始 getSession');
-        const sessionResult = await Promise.race([
-          supabase.auth.getSession(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('getSession 超时（3s），Supabase 可能暂停或不可用')), 3000)),
-        ]);
-        const currentSession = sessionResult?.data?.session || null;
-        console.log('[fridge] bootstrap: getSession 完成, hasUser =', !!currentSession?.user);
-        if (!mounted) return;
-        setSession(currentSession);
-
-        if (currentSession?.user) {
-          try {
-            console.log('[fridge] bootstrap: 开始 ensureHousehold');
-            const nextHousehold = await ensureHouseholdForUser(currentSession.user);
-            console.log('[fridge] bootstrap: ensureHousehold 完成', nextHousehold?.name);
-            if (!mounted) return;
-            if (nextHousehold) {
-              setHousehold(nextHousehold);
-              await hydrateHouseholdData(nextHousehold.id);
-            }
-          } catch (error) {
-            console.error('[fridge] bootstrap: ensureHousehold 失败', error);
-            showToast(`家庭初始化失败：${error.message}`);
-          }
-        }
-      } catch (error) {
-        console.error('[fridge] bootstrap: getSession 失败', error);
-        if (mounted) showToast(`连接失败：${error.message}`);
-      } finally {
-        if (mounted) setIsBootstrapping(false);
-      }
-    }
-
-    bootstrap();
-
+    // 只用 onAuthStateChange 处理所有 session 事件（包括 INITIAL_SESSION）
+    // 不再手动调 getSession()，避免两次调用抢同一把 Web Lock 导致卡死
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
       if (!mounted) return;
-      // 不在 INITIAL_SESSION 事件中重复处理，bootstrap 已经处理过了
-      if (_event === 'INITIAL_SESSION') return;
+      console.log('[fridge] auth event:', _event, 'hasUser:', !!nextSession?.user);
       setSession(nextSession || null);
+
       if (nextSession?.user) {
-        setIsBootstrapping(true);
         try {
           const nextHousehold = await ensureHouseholdForUser(nextSession.user);
           if (!mounted) return;
@@ -763,14 +727,13 @@ export default function FridgeManagerPrototype() {
           }
         } catch (error) {
           if (mounted) showToast(`家庭初始化失败：${error.message}`);
-        } finally {
-          if (mounted) setIsBootstrapping(false);
         }
       } else {
         setHousehold(null);
         setInventory(initialInventory);
         setShoppingList(initialShopping);
       }
+      if (mounted) setIsBootstrapping(false);
     });
 
     return () => {
