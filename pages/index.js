@@ -18,6 +18,10 @@ import {
 const SUPABASE_URL = typeof process !== 'undefined' ? process.env.NEXT_PUBLIC_SUPABASE_URL : '';
 const SUPABASE_ANON_KEY = typeof process !== 'undefined' ? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY : '';
 
+console.log('[fridge] SUPABASE_URL =', SUPABASE_URL || '(空)');
+console.log('[fridge] SUPABASE_ANON_KEY =', SUPABASE_ANON_KEY ? `${SUPABASE_ANON_KEY.slice(0, 20)}...（已截断）` : '(空)');
+console.log('[fridge] supabase client =', SUPABASE_URL && SUPABASE_ANON_KEY ? '已创建' : '未创建（缺少环境变量）');
+
 const supabase =
   SUPABASE_URL && SUPABASE_ANON_KEY
     ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
