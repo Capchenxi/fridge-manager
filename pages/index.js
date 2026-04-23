@@ -706,27 +706,42 @@ export default function FridgeManagerPrototype() {
     }
     let mounted = true;
 
+    // 保底：最多 6 秒后强制结束 loading，防止页面卡死
+    const failsafeTimer = setTimeout(() => {
+      if (mounted) {
+        console.warn('[fridge] bootstrap 超时，强制结束 loading');
+        setIsBootstrapping(false);
+      }
+    }, 6000);
+
     async function bootstrap() {
       try {
+        console.log('[fridge] bootstrap: 开始 getSession');
         const { data: { session: currentSession } } = await supabase.auth.getSession();
+        console.log('[fridge] bootstrap: getSession 完成, hasUser =', !!currentSession?.user);
         if (!mounted) return;
         setSession(currentSession || null);
 
         if (currentSession?.user) {
           try {
+            console.log('[fridge] bootstrap: 开始 ensureHousehold');
             const nextHousehold = await ensureHouseholdForUser(currentSession.user);
+            console.log('[fridge] bootstrap: ensureHousehold 完成', nextHousehold?.name);
             if (!mounted) return;
             if (nextHousehold) {
               setHousehold(nextHousehold);
               await hydrateHouseholdData(nextHousehold.id);
             }
           } catch (error) {
+            console.error('[fridge] bootstrap: ensureHousehold 失败', error);
             showToast(`家庭初始化失败：${error.message}`);
           }
         }
       } catch (error) {
+        console.error('[fridge] bootstrap: getSession 失败', error);
         if (mounted) showToast(`连接失败：${error.message}`);
       } finally {
+        clearTimeout(failsafeTimer);
         if (mounted) setIsBootstrapping(false);
       }
     }
@@ -735,6 +750,8 @@ export default function FridgeManagerPrototype() {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
       if (!mounted) return;
+      // 不在 INITIAL_SESSION 事件中重复处理，bootstrap 已经处理过了
+      if (_event === 'INITIAL_SESSION') return;
       setSession(nextSession || null);
       if (nextSession?.user) {
         setIsBootstrapping(true);
@@ -759,6 +776,7 @@ export default function FridgeManagerPrototype() {
 
     return () => {
       mounted = false;
+      clearTimeout(failsafeTimer);
       subscription.unsubscribe();
     };
   }, []);
