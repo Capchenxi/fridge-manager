@@ -706,21 +706,17 @@ export default function FridgeManagerPrototype() {
     }
     let mounted = true;
 
-    // 保底：最多 6 秒后强制结束 loading，防止页面卡死
-    const failsafeTimer = setTimeout(() => {
-      if (mounted) {
-        console.warn('[fridge] bootstrap 超时，强制结束 loading');
-        setIsBootstrapping(false);
-      }
-    }, 6000);
-
     async function bootstrap() {
       try {
         console.log('[fridge] bootstrap: 开始 getSession');
-        const { data: { session: currentSession } } = await supabase.auth.getSession();
+        const sessionResult = await Promise.race([
+          supabase.auth.getSession(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('getSession 超时（3s），Supabase 可能暂停或不可用')), 3000)),
+        ]);
+        const currentSession = sessionResult?.data?.session || null;
         console.log('[fridge] bootstrap: getSession 完成, hasUser =', !!currentSession?.user);
         if (!mounted) return;
-        setSession(currentSession || null);
+        setSession(currentSession);
 
         if (currentSession?.user) {
           try {
@@ -741,7 +737,6 @@ export default function FridgeManagerPrototype() {
         console.error('[fridge] bootstrap: getSession 失败', error);
         if (mounted) showToast(`连接失败：${error.message}`);
       } finally {
-        clearTimeout(failsafeTimer);
         if (mounted) setIsBootstrapping(false);
       }
     }
@@ -776,7 +771,6 @@ export default function FridgeManagerPrototype() {
 
     return () => {
       mounted = false;
-      clearTimeout(failsafeTimer);
       subscription.unsubscribe();
     };
   }, []);
