@@ -751,33 +751,53 @@ export default function FridgeManagerPrototype() {
 
   const persistInventoryItem = async (item) => {
     if (!supabase || !household) return;
-    await supabase.from('inventory_items').insert({
-      household_id: household.id,
-      name: item.name,
-      category: item.category,
-      zone: item.zone,
-      days_left: item.daysLeft,
-      amount: item.amount,
-      for_baby: item.forBaby,
-      note: item.note,
-      is_seasoning: item.isSeasoning,
-      low_stock: item.lowStock,
-    });
+    try {
+      const { error } = await supabase.from('inventory_items').insert({
+        household_id: household.id,
+        name: item.name,
+        category: item.category,
+        zone: item.zone,
+        days_left: item.daysLeft,
+        amount: item.amount,
+        for_baby: item.forBaby,
+        note: item.note,
+        is_seasoning: item.isSeasoning,
+        low_stock: item.lowStock,
+      });
+      if (error) throw error;
+    } catch (err) {
+      showToast(`同步失败：${item.name} 未能保存到云端`);
+    }
   };
 
   const persistShoppingItem = async (entry) => {
     if (!supabase || !household) return;
-    await supabase.from('shopping_items').insert({ household_id: household.id, name: entry.name, qty: entry.qty || '' });
+    try {
+      const { error } = await supabase.from('shopping_items').insert({ household_id: household.id, name: entry.name, qty: entry.qty || '' });
+      if (error) throw error;
+    } catch (err) {
+      showToast(`同步失败：${entry.name} 未能保存到云端`);
+    }
   };
 
   const removeShoppingItemRemote = async (id) => {
     if (!supabase || !household) return;
-    await supabase.from('shopping_items').delete().eq('id', id).eq('household_id', household.id);
+    try {
+      const { error } = await supabase.from('shopping_items').delete().eq('id', id).eq('household_id', household.id);
+      if (error) throw error;
+    } catch (err) {
+      showToast('同步失败：待买清单项未能从云端删除');
+    }
   };
 
   const removeInventoryItemRemote = async (id) => {
     if (!supabase || !household) return;
-    await supabase.from('inventory_items').delete().eq('id', id).eq('household_id', household.id);
+    try {
+      const { error } = await supabase.from('inventory_items').delete().eq('id', id).eq('household_id', household.id);
+      if (error) throw error;
+    } catch (err) {
+      showToast('同步失败：库存项未能从云端删除');
+    }
   };
 
   const sendMagicLink = async () => {
@@ -892,8 +912,7 @@ export default function FridgeManagerPrototype() {
   };
 
   const maybeAddShoppingItem = (name) => {
-    const shouldTrack = ['鸡蛋', '牛奶', '西兰花', '生抽', '老抽', '蚝油', '醋', '盐', '糖'];
-    if (!shouldTrack.includes(name)) return;
+    if (!quickAddDefaults[name]) return;
     setShoppingList((prev) => {
       if (prev.some((entry) => entry.name === name)) return prev;
       const preset = quickAddDefaults[name];
@@ -902,6 +921,30 @@ export default function FridgeManagerPrototype() {
       persistShoppingItem(newEntry);
       return [...prev, newEntry];
     });
+  };
+
+  const importSampleData = async () => {
+    const newInventory = initialInventory.map((item, i) => ({ ...item, id: Date.now() + i }));
+    const newShopping = initialShopping.map((entry, i) => ({ ...entry, id: `s-sample-${Date.now()}-${i}` }));
+    setInventory(newInventory);
+    setShoppingList(newShopping);
+    newInventory.forEach((item) => persistInventoryItem(item));
+    newShopping.forEach((entry) => persistShoppingItem(entry));
+    showToast(`已导入 ${newInventory.length} 项库存和 ${newShopping.length} 项待买`);
+  };
+
+  const batchAddToShoppingList = (names) => {
+    const alreadyInList = shoppingList.map((entry) => entry.name);
+    const toAdd = names.filter((name) => !alreadyInList.includes(name));
+    if (!toAdd.length) return [];
+    const newEntries = toAdd.map((name) => {
+      const preset = quickAddDefaults[name];
+      const qty = preset?.isSeasoning ? preset?.amount : preset?.amount || '';
+      return { id: `s-${Date.now()}-${name}`, name, qty };
+    });
+    setShoppingList((prev) => [...prev, ...newEntries]);
+    newEntries.forEach((entry) => persistShoppingItem(entry));
+    return toAdd;
   };
 
   const removeInventoryItem = (item, reason) => {
@@ -915,11 +958,16 @@ export default function FridgeManagerPrototype() {
 
   const parseVoiceInput = () => {
     const names = splitInputTokens(draftInput);
+    if (!names.length) {
+      showToast('请先输入食材');
+      return;
+    }
     const parsed = names.map((name, index) => {
       const preset = quickAddDefaults[name] || { category: '其他', zone: '冷藏', daysLeft: 3, amount: '1份', forBaby: false, isSeasoning: false, lowStock: false };
       return { id: `draft-${index}`, name, ...preset };
     });
     setParsedItems(parsed);
+    showToast(`已识别 ${parsed.length} 项食材`);
   };
 
   const parseCookingLog = () => {
@@ -947,7 +995,7 @@ export default function FridgeManagerPrototype() {
     } else {
       const usedNames = mergedMatches.length ? `（用了：${mergedMatches.map((item) => item.name).join('、')}）` : '';
       setHistory((prev) => [{ action: '做菜记录', item: { name: `${text}${usedNames}` } }, ...prev].slice(0, 6));
-      showToast(mergedMatches.length ? '已记录做菜，默认这些食材还有剩余' : '已记录做菜内容');
+      showToast(mergedMatches.length ? '已记录做菜，默认这些食材还有剩余' : '已记录，但未在库存中匹配到相关食材');
     }
     setCookingLogInput('');
   };
@@ -1008,6 +1056,12 @@ export default function FridgeManagerPrototype() {
       right={<div className="flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-1 text-xs text-emerald-700"><Refrigerator className="h-3.5 w-3.5" /> 良好</div>}
     >
       <div className="space-y-4 p-4">
+        {!inventory.length && (
+          <div className="rounded-2xl border border-dashed border-emerald-300 bg-emerald-50 p-4 text-center">
+            <div className="text-sm font-medium text-emerald-800">冰箱还是空的，要导入一些示例数据体验一下吗？</div>
+            <button onClick={importSampleData} className="mt-3 rounded-xl bg-emerald-600 px-6 py-2 text-sm font-medium text-white">导入示例数据</button>
+          </div>
+        )}
         <Section title="临期抢救区" icon={<AlertTriangle className="h-4 w-4 text-rose-500" />} action="更多">
           <div className="grid grid-cols-3 gap-3">
             {urgentItems.map((item) => <InventoryCard key={item.id} item={item} onOpen={setSelectedItem} />)}
@@ -1041,6 +1095,21 @@ export default function FridgeManagerPrototype() {
                 <div className="mt-2 flex flex-wrap gap-2">
                   {mealPlanAnalysis.needToBuy.length ? mealPlanAnalysis.needToBuy.map((name) => <span key={name} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700">{name}</span>) : <div className="text-sm text-slate-500">当前计划所需食材库存里基本都有</div>}
                 </div>
+                {mealPlanAnalysis.needToBuy.length ? (
+                  <button
+                    onClick={() => {
+                      const added = batchAddToShoppingList(mealPlanAnalysis.needToBuy);
+                      if (added.length) {
+                        showToast(`已加入待买清单：${added.join('、')}`);
+                      } else {
+                        showToast('这些食材已在待买清单中');
+                      }
+                    }}
+                    className="mt-3 w-full rounded-xl bg-sky-600 px-4 py-2 text-sm font-medium text-white"
+                  >
+                    一键加入待买清单
+                  </button>
+                ) : null}
               </div>
             </div>
           </div>
@@ -1062,7 +1131,7 @@ export default function FridgeManagerPrototype() {
           <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
             <div className="mb-3 flex items-center gap-3 text-emerald-700"><div className="rounded-full bg-white p-3 shadow-sm"><Mic className="h-6 w-6" /></div><div><div className="font-medium">按住告诉我，今天买了什么菜？</div><div className="text-xs opacity-80">这里先用文本模拟语音解析</div></div></div>
             <textarea value={draftInput} onChange={(e) => setDraftInput(e.target.value)} placeholder="例如：排骨 番茄 鸡蛋 生抽" className="h-24 w-full rounded-xl border border-emerald-100 bg-white px-3 py-2 text-sm outline-none" />
-            <div className="mt-3 flex gap-2"><button onClick={parseVoiceInput} className="flex-1 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white">解析</button><button onClick={() => setDraftInput('排骨 番茄 鸡蛋 生抽')} className="rounded-xl border border-emerald-200 px-4 py-2 text-sm text-emerald-700">示例</button></div>
+            <div className="mt-3 flex gap-2"><button onClick={parseVoiceInput} disabled={!draftInput.trim()} className="flex-1 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">解析</button><button onClick={() => setDraftInput('排骨 番茄 鸡蛋 生抽')} className="rounded-xl border border-emerald-200 px-4 py-2 text-sm text-emerald-700">示例</button></div>
           </div>
         </Section>
         <Section title="视觉入库" icon={<Camera className="h-4 w-4 text-sky-600" />}>
